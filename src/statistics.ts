@@ -19,12 +19,10 @@ export function calculateStatistics(values: number[]): Statistics {
   const sum = sorted.reduce((acc, val) => acc + val, 0);
   const mean = sum / count;
 
-  // Calculate standard deviation
   const squaredDiffs = sorted.map(val => Math.pow(val - mean, 2));
   const variance = squaredDiffs.reduce((acc, val) => acc + val, 0) / count;
   const stdDev = Math.sqrt(variance);
 
-  // Percentile calculation
   const percentile = (p: number): number => {
     const index = Math.ceil((p / 100) * count) - 1;
     return sorted[Math.max(0, index)];
@@ -105,11 +103,9 @@ function erf(x: number): number {
 }
 
 function incompleteBeta(a: number, b: number, x: number): number {
-  // Simplified approximation for our use case
   if (x <= 0) return 0;
   if (x >= 1) return 1;
 
-  // Use a simple approximation
   return Math.pow(x, a) * Math.pow(1 - x, b);
 }
 
@@ -130,40 +126,45 @@ function cohensD(sample1: number[], sample2: number[]): number {
 }
 
 export function analyzeResults(
-  withPreflight: TransactionResult[],
-  withoutPreflight: TransactionResult[]
+  preflight: TransactionResult[],
+  skip: TransactionResult[]
 ): any {
-  // Filter successful transactions
-  const successfulWithPreflight = withPreflight.filter(r => r.success);
-  const successfulWithoutPreflight = withoutPreflight.filter(r => r.success);
+  const successfulPreflight = preflight.filter(r => r.success);
+  const successfulSkip = skip.filter(r => r.success);
 
-  // Extract total durations
-  const totalWithPreflight = successfulWithPreflight
+  const totalPreflight = successfulPreflight
     .map(r => r.totalDurationMs)
     .filter((d): d is number => d !== undefined);
 
-  const totalWithoutPreflight = successfulWithoutPreflight
+  const totalSkip = successfulSkip
     .map(r => r.totalDurationMs)
     .filter((d): d is number => d !== undefined);
 
-  // Calculate latency difference (with preflight - without preflight)
-  const minLength = Math.min(successfulWithPreflight.length, successfulWithoutPreflight.length);
+  const minLength = Math.min(successfulPreflight.length, successfulSkip.length);
   const totalLatencyDiff: number[] = [];
+  const slotDiff: number[] = [];
 
   for (let i = 0; i < minLength; i++) {
-    const withPreflightDuration = successfulWithPreflight[i].totalDurationMs;
-    const withoutPreflightDuration = successfulWithoutPreflight[i].totalDurationMs;
+    const preflightDuration = successfulPreflight[i].totalDurationMs;
+    const skipDuration = successfulSkip[i].totalDurationMs;
 
-    if (withPreflightDuration !== undefined && withoutPreflightDuration !== undefined) {
-      totalLatencyDiff.push(withPreflightDuration - withoutPreflightDuration);
+    if (preflightDuration !== undefined && skipDuration !== undefined) {
+      totalLatencyDiff.push(preflightDuration - skipDuration);
+    }
+
+    const preflightSlot = successfulPreflight[i].slot;
+    const skipSlot = successfulSkip[i].slot;
+
+    if (preflightSlot !== undefined && skipSlot !== undefined) {
+      // Positive means skip landed later, negative means it landed earlier
+      slotDiff.push(skipSlot - preflightSlot);
     }
   }
 
-  // Perform statistical significance test
   let statisticalTest = null;
-  if (totalWithPreflight.length >= 2 && totalWithoutPreflight.length >= 2) {
-    const tTest = welchTTest(totalWithPreflight, totalWithoutPreflight);
-    const effectSize = cohensD(totalWithPreflight, totalWithoutPreflight);
+  if (totalPreflight.length >= 2 && totalSkip.length >= 2) {
+    const tTest = welchTTest(totalPreflight, totalSkip);
+    const effectSize = cohensD(totalPreflight, totalSkip);
 
     statisticalTest = {
       tStatistic: tTest.tStatistic,
@@ -175,23 +176,24 @@ export function analyzeResults(
   }
 
   return {
-    withPreflightResults: {
-      successCount: successfulWithPreflight.length,
-      failureCount: withPreflight.length - successfulWithPreflight.length,
-      successRate: (successfulWithPreflight.length / withPreflight.length) * 100,
-      totalStats: totalWithPreflight.length > 0 ? calculateStatistics(totalWithPreflight) : undefined,
+    preflightResults: {
+      successCount: successfulPreflight.length,
+      failureCount: preflight.length - successfulPreflight.length,
+      successRate: (successfulPreflight.length / preflight.length) * 100,
+      totalStats: totalPreflight.length > 0 ? calculateStatistics(totalPreflight) : undefined,
     },
-    withoutPreflightResults: {
-      successCount: successfulWithoutPreflight.length,
-      failureCount: withoutPreflight.length - successfulWithoutPreflight.length,
-      successRate: (successfulWithoutPreflight.length / withoutPreflight.length) * 100,
-      totalStats: totalWithoutPreflight.length > 0 ? calculateStatistics(totalWithoutPreflight) : undefined,
+    skipResults: {
+      successCount: successfulSkip.length,
+      failureCount: skip.length - successfulSkip.length,
+      successRate: (successfulSkip.length / skip.length) * 100,
+      totalStats: totalSkip.length > 0 ? calculateStatistics(totalSkip) : undefined,
     },
     comparison: {
       latencyDifferenceMs: totalLatencyDiff.length > 0 ? calculateStatistics(totalLatencyDiff) : undefined,
       successRateDifference:
-        (successfulWithPreflight.length / withPreflight.length) * 100 -
-        (successfulWithoutPreflight.length / withoutPreflight.length) * 100,
+        (successfulPreflight.length / preflight.length) * 100 -
+        (successfulSkip.length / skip.length) * 100,
+      slotDifference: slotDiff.length > 0 ? calculateStatistics(slotDiff) : undefined,
       statisticalTest,
     },
   };
@@ -209,25 +211,25 @@ export function printSummary(summary: any, config: any): void {
   console.log(`  Timestamp: ${summary.timestamp}`);
 
   console.log('\n' + '-'.repeat(80));
-  console.log('WITH PREFLIGHT CHECKS');
+  console.log('PREFLIGHT');
   console.log('-'.repeat(80));
-  const withPreflight = summary.withPreflightResults;
-  console.log(`Success Rate: ${withPreflight.successRate.toFixed(2)}% (${withPreflight.successCount}/${withPreflight.successCount + withPreflight.failureCount})`);
+  const preflight = summary.preflightResults;
+  console.log(`Success Rate: ${preflight.successRate.toFixed(2)}% (${preflight.successCount}/${preflight.successCount + preflight.failureCount})`);
 
-  if (withPreflight.totalStats) {
+  if (preflight.totalStats) {
     console.log(`\nTotal Duration (ms):`);
-    printStats(withPreflight.totalStats);
+    printStats(preflight.totalStats);
   }
 
   console.log('\n' + '-'.repeat(80));
-  console.log('WITHOUT PREFLIGHT CHECKS (skipPreflight: true)');
+  console.log('SKIP');
   console.log('-'.repeat(80));
-  const withoutPreflight = summary.withoutPreflightResults;
-  console.log(`Success Rate: ${withoutPreflight.successRate.toFixed(2)}% (${withoutPreflight.successCount}/${withoutPreflight.successCount + withoutPreflight.failureCount})`);
+  const skip = summary.skipResults;
+  console.log(`Success Rate: ${skip.successRate.toFixed(2)}% (${skip.successCount}/${skip.successCount + skip.failureCount})`);
 
-  if (withoutPreflight.totalStats) {
+  if (skip.totalStats) {
     console.log(`\nTotal Duration (ms):`);
-    printStats(withoutPreflight.totalStats);
+    printStats(skip.totalStats);
   }
 
   console.log('\n' + '-'.repeat(80));
@@ -235,13 +237,45 @@ export function printSummary(summary: any, config: any): void {
   console.log('-'.repeat(80));
 
   if (summary.comparison.latencyDifferenceMs) {
-    console.log(`\nLatency Difference (with preflight - without preflight, ms):`);
+    console.log(`\nLatency Difference (preflight - skip, ms):`);
     printStats(summary.comparison.latencyDifferenceMs);
+  }
+
+  if (summary.comparison.slotDifference) {
+    console.log(`\nSlot Difference (skip - preflight):`);
+    printStats(summary.comparison.slotDifference);
+    console.log(`  → Negative: skip landed earlier`);
+    console.log(`  → Positive: skip landed later`);
+    console.log(`  → Zero: both landed in same slot`);
+
+    // Calculate expected latency from slot difference (Solana slots are ~400ms apart)
+    const SLOT_TIME_MS = 400;
+    const expectedLatencyFromSlots = {
+      mean: summary.comparison.slotDifference.mean * SLOT_TIME_MS,
+      median: summary.comparison.slotDifference.median * SLOT_TIME_MS,
+      min: summary.comparison.slotDifference.min * SLOT_TIME_MS,
+      max: summary.comparison.slotDifference.max * SLOT_TIME_MS,
+    };
+
+    console.log(`\nExpected Latency from Slot Differences (400ms/slot):`);
+    console.log(`  Mean:   ${expectedLatencyFromSlots.mean.toFixed(2)} ms`);
+    console.log(`  Median: ${expectedLatencyFromSlots.median.toFixed(2)} ms`);
+    console.log(`  Min:    ${expectedLatencyFromSlots.min.toFixed(2)} ms`);
+    console.log(`  Max:    ${expectedLatencyFromSlots.max.toFixed(2)} ms`);
+
+    if (summary.comparison.latencyDifferenceMs) {
+      const observedMean = summary.comparison.latencyDifferenceMs.mean;
+      const expectedMean = expectedLatencyFromSlots.mean;
+      const discrepancy = observedMean - expectedMean;
+      console.log(`\nComparison:`);
+      console.log(`  Observed latency difference (mean): ${observedMean.toFixed(2)} ms`);
+      console.log(`  Expected from slots (mean):         ${expectedMean.toFixed(2)} ms`);
+      console.log(`  Discrepancy:                        ${discrepancy > 0 ? '+' : ''}${discrepancy.toFixed(2)} ms`);
+    }
   }
 
   console.log(`\nSuccess Rate Difference: ${summary.comparison.successRateDifference > 0 ? '+' : ''}${summary.comparison.successRateDifference.toFixed(2)}%`);
 
-  // Print statistical significance test results
   if (summary.comparison.statisticalTest) {
     const test = summary.comparison.statisticalTest;
     console.log(`\nStatistical Significance Test (Welch's t-test):`);
@@ -252,15 +286,14 @@ export function printSummary(summary: any, config: any): void {
     console.log(`  Statistically significant (α=0.05): ${test.significant ? 'YES' : 'NO'}`);
 
     if (test.significant) {
-      const withMean = summary.withPreflightResults.totalStats?.mean || 0;
-      const withoutMean = summary.withoutPreflightResults.totalStats?.mean || 0;
-      const direction = withMean > withoutMean ? 'SLOWER' : 'FASTER';
+      const preflightMean = summary.preflightResults.totalStats?.mean || 0;
+      const skipMean = summary.skipResults.totalStats?.mean || 0;
+      const direction = preflightMean > skipMean ? 'SLOWER' : 'FASTER';
       console.log(`  \n  → Preflight checks make transactions ${direction} (p < 0.05)`);
     } else {
       console.log(`  \n  → No statistically significant difference detected`);
     }
 
-    // Effect size interpretation
     const absEffect = Math.abs(test.effectSize);
     let effectInterpretation = '';
     if (absEffect < 0.2) effectInterpretation = 'negligible';

@@ -5,7 +5,6 @@ import {
   SystemProgram,
   Transaction,
   sendAndConfirmTransaction,
-  TransactionSignature,
 } from '@solana/web3.js';
 import { TestConfig, TransactionResult } from './types';
 import { analyzeResults, printSummary } from './statistics';
@@ -19,12 +18,12 @@ const DEFAULT_CONFIG: TestConfig = {
   confirmationLevel: 'confirmed',
 };
 
-async function runSingleTest(
+async function sendAndTrackTransaction(
   connection: Connection,
+  transaction: Transaction,
   payer: Keypair,
-  recipient: Keypair,
-  config: TestConfig,
   skipPreflight: boolean,
+  config: TestConfig,
   iteration: number
 ): Promise<TransactionResult> {
   const result: TransactionResult = {
@@ -36,40 +35,102 @@ async function runSingleTest(
     success: false,
   };
 
-  try {
-    const transaction = new Transaction().add(
-      SystemProgram.transfer({
-        fromPubkey: payer.publicKey,
-        toPubkey: recipient.publicKey,
-        lamports: config.amountLamports,
-      })
-    );
+  const startMs = Date.now();
+  const signature = await sendAndConfirmTransaction(
+    connection,
+    transaction,
+    [payer],
+    {
+      skipPreflight,
+      commitment: config.confirmationLevel,
+    }
+  );
+  const endMs = Date.now();
 
-    const startMs = Date.now();
-    const signature = await sendAndConfirmTransaction(
-      connection,
-      transaction,
-      [payer],
-      {
-        skipPreflight,
-        commitment: config.confirmationLevel,
+  result.submissionStartMs = startMs;
+  result.submissionEndMs = endMs;
+  result.submissionDurationMs = endMs - startMs;
+  result.totalDurationMs = endMs - startMs;
+  result.signature = signature;
+  result.success = true;
+
+  // Fetch slot number with retry
+  const maxRetries = 3;
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      const txStatus = await connection.getTransaction(signature, {
+        maxSupportedTransactionVersion: 0,
+      });
+      if (txStatus?.slot) {
+        result.slot = txStatus.slot;
+        break;
       }
-    );
-    const endMs = Date.now();
-
-    result.submissionStartMs = startMs;
-    result.submissionEndMs = endMs;
-    result.submissionDurationMs = endMs - startMs;
-    result.totalDurationMs = endMs - startMs;
-    result.signature = signature;
-    result.success = true;
-
-  } catch (error) {
-    result.success = false;
-    result.error = error instanceof Error ? error.message : String(error);
+    } catch (error) {
+      if (attempt < maxRetries - 1) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+      // If all retries fail, slot will remain undefined
+    }
   }
 
   return result;
+}
+
+async function runSimultaneousPair(
+  connection: Connection,
+  payer: Keypair,
+  recipient: Keypair,
+  config: TestConfig,
+  iteration: number
+): Promise<[TransactionResult, TransactionResult]> {
+  // Create two different transactions (different amounts to avoid sending the same tx twice and subsequent deduplication)
+  const preflightTx = new Transaction().add(
+    SystemProgram.transfer({
+      fromPubkey: payer.publicKey,
+      toPubkey: recipient.publicKey,
+      lamports: config.amountLamports,
+    })
+  );
+
+  const skipTx = new Transaction().add(
+    SystemProgram.transfer({
+      fromPubkey: payer.publicKey,
+      toPubkey: recipient.publicKey,
+      lamports: config.amountLamports + 1,
+    })
+  );
+
+  // Send both transactions simultaneously
+  const [preflightResult, skipResult] = await Promise.allSettled([
+    sendAndTrackTransaction(connection, preflightTx, payer, false, config, iteration),
+    sendAndTrackTransaction(connection, skipTx, payer, true, config, iteration),
+  ]);
+
+  const result1: TransactionResult = preflightResult.status === 'fulfilled'
+    ? preflightResult.value
+    : {
+        iteration,
+        skipPreflight: false,
+        submissionStartMs: 0,
+        submissionEndMs: 0,
+        submissionDurationMs: 0,
+        success: false,
+        error: preflightResult.reason instanceof Error ? preflightResult.reason.message : String(preflightResult.reason),
+      };
+
+  const result2: TransactionResult = skipResult.status === 'fulfilled'
+    ? skipResult.value
+    : {
+        iteration,
+        skipPreflight: true,
+        submissionStartMs: 0,
+        submissionEndMs: 0,
+        submissionDurationMs: 0,
+        success: false,
+        error: skipResult.reason instanceof Error ? skipResult.reason.message : String(skipResult.reason),
+      };
+
+  return [result1, result2];
 }
 
 function loadOrCreateKeypair(filepath: string): Keypair {
@@ -77,7 +138,6 @@ function loadOrCreateKeypair(filepath: string): Keypair {
     const keypairData = JSON.parse(fs.readFileSync(filepath, 'utf-8'));
     return Keypair.fromSecretKey(new Uint8Array(keypairData));
   } catch (error) {
-    // Keypair doesn't exist, create a new one
     const keypair = Keypair.generate();
     fs.writeFileSync(filepath, JSON.stringify(Array.from(keypair.secretKey)));
     console.log(`Created new keypair at: ${filepath}`);
@@ -92,7 +152,6 @@ async function runTests(config: TestConfig): Promise<void> {
 
   const connection = new Connection(config.rpcEndpoint, 'confirmed');
 
-  // Load or create keypairs
   const payerKeypairPath = path.join(process.cwd(), 'payer-keypair.json');
   const recipientKeypairPath = path.join(process.cwd(), 'recipient-keypair.json');
 
@@ -103,7 +162,6 @@ async function runTests(config: TestConfig): Promise<void> {
   console.log(`Payer: ${payer.publicKey.toBase58()}`);
   console.log(`Recipient: ${recipient.publicKey.toBase58()}`);
 
-  // Check balance and request airdrop if needed
   let balance = await connection.getBalance(payer.publicKey);
   console.log(`\nPayer balance: ${balance / LAMPORTS_PER_SOL} SOL`);
 
@@ -132,40 +190,34 @@ async function runTests(config: TestConfig): Promise<void> {
     throw new Error(`Insufficient balance for test. Need at least ${requiredBalance / LAMPORTS_PER_SOL} SOL.`);
   }
 
-  // Run alternating tests to avoid regime-related effects
-  console.log();
-  console.log('='.repeat(80));
-  console.log('Running alternating tests (with/without preflight)...');
-  console.log('='.repeat(80));
-
   const allResults: TransactionResult[] = [];
 
-  for (let i = 0; i < config.iterations * 2; i++) {
-    const skipPreflight = i % 2 === 1; // Alternate: even = with preflight, odd = without
-    const iterationNumber = Math.floor(i / 2);
+  console.log();
+  console.log('='.repeat(80));
+  console.log('Running simultaneous paired tests (preflight vs skip)...');
+  console.log('='.repeat(80));
 
-    process.stdout.write(`\rProgress: ${i + 1}/${config.iterations * 2} (${skipPreflight ? 'skip' : 'preflight'})`);
+  for (let i = 0; i < config.iterations; i++) {
+    process.stdout.write(`\rProgress: ${i + 1}/${config.iterations} pairs`);
 
-    const result = await runSingleTest(
+    const [result1, result2] = await runSimultaneousPair(
       connection,
       payer,
       recipient,
       config,
-      skipPreflight,
-      iterationNumber
+      i
     );
-    allResults.push(result);
+    allResults.push(result1, result2);
 
-    // Small delay between transactions
+    // Small delay between pairs
     await new Promise(resolve => setTimeout(resolve, 100));
   }
   console.log(' - Complete!\n');
 
-  // Separate results by preflight setting
-  const withPreflightResults = allResults.filter(r => !r.skipPreflight);
-  const withoutPreflightResults = allResults.filter(r => r.skipPreflight);
+  const preflightResults = allResults.filter(r => !r.skipPreflight);
+  const skipResults = allResults.filter(r => r.skipPreflight);
 
-  const analysis = analyzeResults(withPreflightResults, withoutPreflightResults);
+  const analysis = analyzeResults(preflightResults, skipResults);
   const summary = {
     testConfig: config,
     timestamp: new Date().toISOString(),
@@ -183,24 +235,23 @@ async function runTests(config: TestConfig): Promise<void> {
 
   const detailedResults = {
     summary,
-    withPreflightResults,
-    withoutPreflightResults,
+    preflightResults,
+    skipResults,
   };
 
   const jsonPath = path.join(resultsDir, `latency-test-${timestamp}.json`);
   fs.writeFileSync(jsonPath, JSON.stringify(detailedResults, null, 2));
   console.log(`\nDetailed results saved to: ${jsonPath}`);
 
-  // Save summary as CSV
   const csvPath = path.join(resultsDir, `latency-test-${timestamp}.csv`);
-  const csvContent = generateCSV(withPreflightResults, withoutPreflightResults);
+  const csvContent = generateCSV(preflightResults, skipResults);
   fs.writeFileSync(csvPath, csvContent);
   console.log(`CSV results saved to: ${csvPath}`);
 }
 
 function generateCSV(
-  withPreflight: TransactionResult[],
-  withoutPreflight: TransactionResult[]
+  preflight: TransactionResult[],
+  skip: TransactionResult[]
 ): string {
   const headers = [
     'iteration',
@@ -211,7 +262,7 @@ function generateCSV(
     'error',
   ].join(',');
 
-  const rows = [...withPreflight, ...withoutPreflight].map(r => {
+  const rows = [...preflight, ...skip].map(r => {
     return [
       r.iteration,
       r.skipPreflight,
@@ -253,7 +304,6 @@ function parseArgs(): Partial<TestConfig> {
   return config;
 }
 
-// Main execution
 async function main() {
   const customConfig = parseArgs();
   const config: TestConfig = { ...DEFAULT_CONFIG, ...customConfig };

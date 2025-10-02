@@ -20,6 +20,7 @@ export interface TransactionResult {
   totalDurationMs?: number;
   success: boolean;
   signature?: string;
+  slot?: number;
   error?: string;
 }
 
@@ -37,7 +38,7 @@ export interface Statistics {
 export interface TestSummary {
   testConfig: TestConfig;
   timestamp: string;
-  withPreflightResults: {
+  preflightResults: {
     successCount: number;
     failureCount: number;
     successRate: number;
@@ -46,7 +47,7 @@ export interface TestSummary {
     confirmationStats?: Statistics;
     totalStats?: Statistics;
   };
-  withoutPreflightResults: {
+  skipResults: {
     successCount: number;
     failureCount: number;
     successRate: number;
@@ -58,5 +59,6 @@ export interface TestSummary {
     preflightOverheadMs?: Statistics;
     totalLatencyDifferenceMs?: Statistics;
     successRateDifference: number;
+    slotDifference?: Statistics;
   };
 }
