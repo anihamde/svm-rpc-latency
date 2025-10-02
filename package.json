@@ -1,0 +1,28 @@
+{
+  "name": "solana-rpc-latency",
+  "version": "1.0.0",
+  "description": "Test suite for measuring Solana RPC latency with and without preflight checks",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "test": "npm run build && node dist/index.js",
+    "test:quick": "npm run build && node dist/index.js --iterations 10",
+    "clean": "rm -rf dist results"
+  },
+  "keywords": [
+    "solana",
+    "rpc",
+    "latency",
+    "preflight",
+    "testing"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@solana/web3.js": "^1.95.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "typescript": "^5.3.3"
+  }
+}

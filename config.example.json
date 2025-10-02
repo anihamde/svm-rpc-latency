@@ -1,0 +1,12 @@
+{
+  "rpcEndpoint": "https://api.testnet.solana.com",
+  "iterations": 50,
+  "amountLamports": 1000,
+  "confirmationLevel": "confirmed",
+  "notes": {
+    "rpcEndpoint": "Solana RPC endpoint URL. Use testnet, devnet, or mainnet-beta",
+    "iterations": "Number of test iterations to run for each configuration",
+    "amountLamports": "Amount to transfer in lamports (1 SOL = 1,000,000,000 lamports)",
+    "confirmationLevel": "Transaction confirmation level: 'processed', 'confirmed', or 'finalized'"
+  }
+}
