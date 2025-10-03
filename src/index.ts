@@ -192,7 +192,7 @@ async function runTests(config: TestConfig): Promise<void> {
   console.log(`Recipient 2 (Skip): ${recipient2.publicKey.toBase58()}`);
 
   let balance1 = await connection1.getBalance(payer1.publicKey);
-  let balance2 = await connection.getBalance(payer2.publicKey);
+  let balance2 = await connection2.getBalance(payer2.publicKey);
   console.log(`\nPayer 1 balance: ${balance1 / LAMPORTS_PER_SOL} SOL`);
   console.log(`Payer 2 balance: ${balance2 / LAMPORTS_PER_SOL} SOL`);
 
@@ -263,7 +263,15 @@ async function runTests(config: TestConfig): Promise<void> {
       config,
       i
     );
-    allResults.push(resultPreflight, resultSkip);
+
+    // Discard first 5 iterations to allow for warm-up
+    // We have observed that the first few transactions
+    // can have significantly different latency characteristics
+    // and extreme differences between preflight and skipPreflight
+    // which can skew the overall results.
+    if (i >= 5) {
+      allResults.push(resultPreflight, resultSkip);
+    }
 
     // Small delay between pairs
     await new Promise(resolve => setTimeout(resolve, 1000));
