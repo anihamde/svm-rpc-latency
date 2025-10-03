@@ -140,20 +140,24 @@ export function analyzeResults(
     .map(r => r.totalDurationMs)
     .filter((d): d is number => d !== undefined);
 
-  const minLength = Math.min(successfulPreflight.length, successfulSkip.length);
+  // Match transactions by iteration number (from same batch)
   const totalLatencyDiff: number[] = [];
   const slotDiff: number[] = [];
 
-  for (let i = 0; i < minLength; i++) {
-    const preflightDuration = successfulPreflight[i].totalDurationMs;
-    const skipDuration = successfulSkip[i].totalDurationMs;
+  for (const preflightTx of successfulPreflight) {
+    const skipTx = successfulSkip.find(s => s.iteration === preflightTx.iteration);
+
+    if (!skipTx) continue; // Skip if pair didn't both succeed
+
+    const preflightDuration = preflightTx.totalDurationMs;
+    const skipDuration = skipTx.totalDurationMs;
 
     if (preflightDuration !== undefined && skipDuration !== undefined) {
       totalLatencyDiff.push(preflightDuration - skipDuration);
     }
 
-    const preflightSlot = successfulPreflight[i].slot;
-    const skipSlot = successfulSkip[i].slot;
+    const preflightSlot = preflightTx.slot;
+    const skipSlot = skipTx.slot;
 
     if (preflightSlot !== undefined && skipSlot !== undefined) {
       // Positive means skip landed later, negative means it landed earlier

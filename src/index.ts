@@ -78,35 +78,43 @@ async function sendAndTrackTransaction(
 
 async function runSimultaneousPair(
   connection: Connection,
-  payer: Keypair,
-  recipient: Keypair,
+  payer1: Keypair,
+  recipient1: Keypair,
+  payer2: Keypair,
+  recipient2: Keypair,
   config: TestConfig,
   iteration: number
 ): Promise<[TransactionResult, TransactionResult]> {
-  // Create two different transactions (different amounts to avoid sending the same tx twice and subsequent deduplication)
   const preflightTx = new Transaction().add(
     SystemProgram.transfer({
-      fromPubkey: payer.publicKey,
-      toPubkey: recipient.publicKey,
+      fromPubkey: payer1.publicKey,
+      toPubkey: recipient1.publicKey,
       lamports: config.amountLamports,
     })
   );
 
   const skipTx = new Transaction().add(
     SystemProgram.transfer({
-      fromPubkey: payer.publicKey,
-      toPubkey: recipient.publicKey,
-      lamports: config.amountLamports + 1,
+      fromPubkey: payer2.publicKey,
+      toPubkey: recipient2.publicKey,
+      lamports: config.amountLamports,
     })
   );
 
-  // Send both transactions simultaneously
-  const [preflightResult, skipResult] = await Promise.allSettled([
-    sendAndTrackTransaction(connection, preflightTx, payer, false, config, iteration),
-    sendAndTrackTransaction(connection, skipTx, payer, true, config, iteration),
-  ]);
+  // Send both transactions simultaneously with randomized order
+  const preflightPromise = sendAndTrackTransaction(connection, preflightTx, payer1, false, config, iteration);
+  const skipPromise = sendAndTrackTransaction(connection, skipTx, payer2, true, config, iteration);
 
-  const result1: TransactionResult = preflightResult.status === 'fulfilled'
+  const randomOrder = Math.random() < 0.5;
+  const [firstResult, secondResult] = await Promise.allSettled(
+    randomOrder ? [preflightPromise, skipPromise] : [skipPromise, preflightPromise]
+  );
+
+  const [preflightResult, skipResult] = randomOrder
+    ? [firstResult, secondResult]
+    : [secondResult, firstResult];
+
+  const resultPreflight: TransactionResult = preflightResult.status === 'fulfilled'
     ? preflightResult.value
     : {
         iteration,
@@ -118,7 +126,7 @@ async function runSimultaneousPair(
         error: preflightResult.reason instanceof Error ? preflightResult.reason.message : String(preflightResult.reason),
       };
 
-  const result2: TransactionResult = skipResult.status === 'fulfilled'
+  const resultSkip: TransactionResult = skipResult.status === 'fulfilled'
     ? skipResult.value
     : {
         iteration,
@@ -130,7 +138,7 @@ async function runSimultaneousPair(
         error: skipResult.reason instanceof Error ? skipResult.reason.message : String(skipResult.reason),
       };
 
-  return [result1, result2];
+  return [resultPreflight, resultSkip];
 }
 
 function loadOrCreateKeypair(filepath: string): Keypair {
@@ -152,33 +160,43 @@ async function runTests(config: TestConfig): Promise<void> {
 
   const connection = new Connection(config.rpcEndpoint, 'confirmed');
 
-  const payerKeypairPath = path.join(process.cwd(), 'payer-keypair.json');
-  const recipientKeypairPath = path.join(process.cwd(), 'recipient-keypair.json');
+  const payer1KeypairPath = path.join(process.cwd(), 'payer1-keypair.json');
+  const recipient1KeypairPath = path.join(process.cwd(), 'recipient1-keypair.json');
+  const payer2KeypairPath = path.join(process.cwd(), 'payer2-keypair.json');
+  const recipient2KeypairPath = path.join(process.cwd(), 'recipient2-keypair.json');
 
-  const payer = loadOrCreateKeypair(payerKeypairPath);
-  const recipient = loadOrCreateKeypair(recipientKeypairPath);
+  const payer1 = loadOrCreateKeypair(payer1KeypairPath);
+  const recipient1 = loadOrCreateKeypair(recipient1KeypairPath);
+  const payer2 = loadOrCreateKeypair(payer2KeypairPath);
+  const recipient2 = loadOrCreateKeypair(recipient2KeypairPath);
 
   console.log(`\nUsing Keypairs:`);
-  console.log(`Payer: ${payer.publicKey.toBase58()}`);
-  console.log(`Recipient: ${recipient.publicKey.toBase58()}`);
+  console.log(`Payer 1 (Preflight): ${payer1.publicKey.toBase58()}`);
+  console.log(`Recipient 1 (Preflight): ${recipient1.publicKey.toBase58()}`);
+  console.log(`Payer 2 (Skip): ${payer2.publicKey.toBase58()}`);
+  console.log(`Recipient 2 (Skip): ${recipient2.publicKey.toBase58()}`);
 
-  let balance = await connection.getBalance(payer.publicKey);
-  console.log(`\nPayer balance: ${balance / LAMPORTS_PER_SOL} SOL`);
+  let balance1 = await connection.getBalance(payer1.publicKey);
+  let balance2 = await connection.getBalance(payer2.publicKey);
+  console.log(`\nPayer 1 balance: ${balance1 / LAMPORTS_PER_SOL} SOL`);
+  console.log(`Payer 2 balance: ${balance2 / LAMPORTS_PER_SOL} SOL`);
 
-  const requiredBalance = config.amountLamports * config.iterations * 2;
-  if (balance < requiredBalance) {
-    console.log(`\nInsufficient balance. Requesting airdrop...`);
+  const requiredBalancePerPayer = config.amountLamports * config.iterations;
+
+  // Request airdrops if needed
+  if (balance1 < requiredBalancePerPayer) {
+    console.log(`\nInsufficient balance for Payer 1. Requesting airdrop...`);
     try {
       const airdropSignature = await connection.requestAirdrop(
-        payer.publicKey,
+        payer1.publicKey,
         LAMPORTS_PER_SOL * 1
       );
       console.log('Airdrop transaction signature:', airdropSignature);
       await connection.confirmTransaction(airdropSignature);
       console.log('Airdrop successful!');
 
-      balance = await connection.getBalance(payer.publicKey);
-      console.log(`New balance: ${balance / LAMPORTS_PER_SOL} SOL`);
+      balance1 = await connection.getBalance(payer1.publicKey);
+      console.log(`New Payer 1 balance: ${balance1 / LAMPORTS_PER_SOL} SOL`);
     } catch (error) {
       console.error('Airdrop failed. Please ensure you are connected to testnet.');
       console.error('You may need to fund the wallet manually or try again later.');
@@ -186,8 +204,28 @@ async function runTests(config: TestConfig): Promise<void> {
     }
   }
 
-  if (balance < requiredBalance) {
-    throw new Error(`Insufficient balance for test. Need at least ${requiredBalance / LAMPORTS_PER_SOL} SOL.`);
+  if (balance2 < requiredBalancePerPayer) {
+    console.log(`\nInsufficient balance for Payer 2. Requesting airdrop...`);
+    try {
+      const airdropSignature = await connection.requestAirdrop(
+        payer2.publicKey,
+        LAMPORTS_PER_SOL * 1
+      );
+      console.log('Airdrop transaction signature:', airdropSignature);
+      await connection.confirmTransaction(airdropSignature);
+      console.log('Airdrop successful!');
+
+      balance2 = await connection.getBalance(payer2.publicKey);
+      console.log(`New Payer 2 balance: ${balance2 / LAMPORTS_PER_SOL} SOL`);
+    } catch (error) {
+      console.error('Airdrop failed. Please ensure you are connected to testnet.');
+      console.error('You may need to fund the wallet manually or try again later.');
+      throw error;
+    }
+  }
+
+  if (balance1 < requiredBalancePerPayer || balance2 < requiredBalancePerPayer) {
+    throw new Error(`Insufficient balance for test. Each payer needs at least ${requiredBalancePerPayer / LAMPORTS_PER_SOL} SOL.`);
   }
 
   const allResults: TransactionResult[] = [];
@@ -200,14 +238,16 @@ async function runTests(config: TestConfig): Promise<void> {
   for (let i = 0; i < config.iterations; i++) {
     process.stdout.write(`\rProgress: ${i + 1}/${config.iterations} pairs`);
 
-    const [result1, result2] = await runSimultaneousPair(
+    const [resultPreflight, resultSkip] = await runSimultaneousPair(
       connection,
-      payer,
-      recipient,
+      payer1,
+      recipient1,
+      payer2,
+      recipient2,
       config,
       i
     );
-    allResults.push(result1, result2);
+    allResults.push(resultPreflight, resultSkip);
 
     // Small delay between pairs
     await new Promise(resolve => setTimeout(resolve, 100));
