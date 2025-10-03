@@ -8,6 +8,8 @@ export function calculateStatistics(values: number[]): Statistics {
       max: 0,
       mean: 0,
       median: 0,
+      p25: 0,
+      p75: 0,
       p95: 0,
       p99: 0,
       stdDev: 0,
@@ -34,6 +36,8 @@ export function calculateStatistics(values: number[]): Statistics {
     max: sorted[count - 1],
     mean: Math.round(mean * 100) / 100,
     median: sorted[Math.floor(count / 2)],
+    p25: percentile(25),
+    p75: percentile(75),
     p95: percentile(95),
     p99: percentile(99),
     stdDev: Math.round(stdDev * 100) / 100,
@@ -153,7 +157,7 @@ export function analyzeResults(
     const skipDuration = skipTx.totalDurationMs;
 
     if (preflightDuration !== undefined && skipDuration !== undefined) {
-      totalLatencyDiff.push(preflightDuration - skipDuration);
+      totalLatencyDiff.push(skipDuration - preflightDuration);
     }
 
     const preflightSlot = preflightTx.slot;
@@ -195,8 +199,8 @@ export function analyzeResults(
     comparison: {
       latencyDifferenceMs: totalLatencyDiff.length > 0 ? calculateStatistics(totalLatencyDiff) : undefined,
       successRateDifference:
-        (successfulPreflight.length / preflight.length) * 100 -
-        (successfulSkip.length / skip.length) * 100,
+        (successfulSkip.length / skip.length) * 100 -
+        (successfulPreflight.length / preflight.length) * 100,
       slotDifference: slotDiff.length > 0 ? calculateStatistics(slotDiff) : undefined,
       statisticalTest,
     },
@@ -241,8 +245,11 @@ export function printSummary(summary: any, config: any): void {
   console.log('-'.repeat(80));
 
   if (summary.comparison.latencyDifferenceMs) {
-    console.log(`\nLatency Difference (preflight - skip, ms):`);
+    console.log(`\nLatency Difference (skip - preflight, ms):`);
     printStats(summary.comparison.latencyDifferenceMs);
+    console.log(`  → Negative: skip was faster`);
+    console.log(`  → Positive: skip was slower`);
+    console.log(`  → Zero: same duration`);
   }
 
   if (summary.comparison.slotDifference) {
@@ -278,7 +285,7 @@ export function printSummary(summary: any, config: any): void {
     }
   }
 
-  console.log(`\nSuccess Rate Difference: ${summary.comparison.successRateDifference > 0 ? '+' : ''}${summary.comparison.successRateDifference.toFixed(2)}%`);
+  console.log(`\nSuccess Rate Difference (skip - preflight): ${summary.comparison.successRateDifference > 0 ? '+' : ''}${summary.comparison.successRateDifference.toFixed(2)}%`);
 
   if (summary.comparison.statisticalTest) {
     const test = summary.comparison.statisticalTest;
@@ -316,6 +323,8 @@ function printStats(stats: Statistics): void {
   console.log(`  Max:    ${stats.max.toFixed(2)}`);
   console.log(`  Mean:   ${stats.mean.toFixed(2)}`);
   console.log(`  Median: ${stats.median.toFixed(2)}`);
+  console.log(`  P25:    ${stats.p25.toFixed(2)}`);
+  console.log(`  P75:    ${stats.p75.toFixed(2)}`);
   console.log(`  P95:    ${stats.p95.toFixed(2)}`);
   console.log(`  P99:    ${stats.p99.toFixed(2)}`);
   console.log(`  StdDev: ${stats.stdDev.toFixed(2)}`);

@@ -30,6 +30,8 @@ export interface Statistics {
   max: number;
   mean: number;
   median: number;
+  p25: number;
+  p75: number;
   p95: number;
   p99: number;
   stdDev: number;
